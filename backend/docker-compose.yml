@@ -1,0 +1,26 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: quinicastock
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+  api-gateway:
+    build: ./api-gateway
+    ports:
+      - "8080:8080"
+  auth-service:
+    build: ./auth-service
+    ports:
+      - "8081:8081"
+  tenant-service:
+    build: ./tenant-service
+    ports:
+      - "8082:8082"
+  inventory-service:
+    build: ./inventory-service
+    ports:
+      - "8083:8083"
