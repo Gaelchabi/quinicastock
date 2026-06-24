@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -10,127 +10,151 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { TrendingUp, Plus, DollarSign, ShoppingCart, Calendar } from 'lucide-react';
 import { useApp } from '@/lib/app-context';
-import { Empty } from '@/components/ui/empty';
-import { formatCurrency } from '@/lib/mock-data';
+import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
-import type { Sale } from '@/lib/mock-data';
+
+interface Sale {
+  id: string;
+  productId: string;
+  productName?: string;
+  quantity: number;
+  unitPrice: number;
+  totalPrice: number;
+  tenantId: string;
+  createdAt: string;
+}
+
+interface Product {
+  id: string;
+  name: string;
+  quantity: number;
+  price: number;
+  unit?: string;
+}
 
 export default function SalesPage() {
-  const { sales, products, store, setSales, updateProduct } = useApp();
+  const { store, products: contextProducts, setProducts } = useApp();
   const { toast } = useToast();
+  const [sales, setSales] = useState<Sale[]>([]);
+  const [products, setProductsData] = useState<Product[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [formData, setFormData] = useState({
     productId: '',
-    quantity: '',
+    quantity: 1,
   });
 
-  // Calculate stats
-  const todaySales = sales.filter(sale => {
-    const saleDate = new Date(sale.date);
-    const today = new Date();
-    return saleDate.toDateString() === today.toDateString();
-  });
+  useEffect(() => {
+    if (store?.id) {
+      loadData();
+    }
+  }, [store?.id]);
 
-  const totalRevenue = sales.reduce((sum, sale) => sum + sale.totalPrice, 0);
-  const todayRevenue = todaySales.reduce((sum, sale) => sum + sale.totalPrice, 0);
-  const totalItemsSold = sales.reduce((sum, sale) => sum + sale.quantity, 0);
+  const loadData = async () => {
+    if (!store?.id) return;
+    setIsLoading(true);
+    
+    const [salesRes, productsRes] = await Promise.all([
+      api.sales.list(store.id),
+      api.products.list(store.id)
+    ]);
+
+    if (salesRes.error) {
+      toast({ title: 'Erreur', description: salesRes.error, variant: 'destructive' });
+    } else {
+      const salesWithProducts = (salesRes.data || []).map((s: any) => {
+        const product = productsRes.data?.find((p: any) => p.id === s.productId);
+        return { ...s, productName: product?.name || 'Inconnu' };
+      });
+      setSales(salesWithProducts);
+    }
+
+    if (productsRes.error) {
+      toast({ title: 'Erreur', description: productsRes.error, variant: 'destructive' });
+    } else {
+      setProductsData(productsRes.data || []);
+      setProducts((productsRes.data || []).map((p: any) => ({
+        id: p.id,
+        storeId: p.tenantId,
+        name: p.name,
+        price: p.price,
+        quantity: p.quantity,
+        categoryId: p.categoryId,
+        lowStockThreshold: p.lowStockThreshold,
+        unit: p.unit,
+      })));
+    }
+    setIsLoading(false);
+  };
+
+  const formatCurrency = (value: number) => {
+    return new Intl.NumberFormat('fr-FR', { style: 'currency', currency: store?.currency || 'XOF' }).format(value);
+  };
+
+  const today = new Date().toISOString().split('T')[0];
+  const todaySales = sales.filter(s => s.createdAt?.startsWith(today));
+  
+  const totalRevenue = sales.reduce((sum, s) => sum + s.totalPrice, 0);
+  const todayRevenue = todaySales.reduce((sum, s) => sum + s.totalPrice, 0);
+  const totalItemsSold = sales.reduce((sum, s) => sum + s.quantity, 0);
 
   const handleOpenDialog = () => {
-    setFormData({
-      productId: '',
-      quantity: '',
-    });
+    setFormData({ productId: '', quantity: 1 });
     setIsDialogOpen(true);
   };
 
   const handleCloseDialog = () => {
     setIsDialogOpen(false);
-    setFormData({
-      productId: '',
-      quantity: '',
-    });
+    setFormData({ productId: '', quantity: 1 });
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!store?.id) return;
 
     const product = products.find(p => p.id === formData.productId);
     if (!product) {
-      toast({
-        title: 'Erreur',
-        description: 'Produit non trouvé',
-        variant: 'destructive',
+      toast({ title: 'Erreur', description: 'Produit non trouvé', variant: 'destructive' });
+      return;
+    }
+
+    if (formData.quantity > product.quantity) {
+      toast({ 
+        title: 'Stock insuffisant', 
+        description: `Stock disponible: ${product.quantity} ${product.unit || 'pièce(s)'}`, 
+        variant: 'destructive' 
       });
       return;
     }
 
-    const quantity = parseInt(formData.quantity);
-    if (quantity <= 0) {
-      toast({
-        title: 'Erreur',
-        description: 'La quantité doit être supérieure à 0',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    if (quantity > product.quantity) {
-      toast({
-        title: 'Stock insuffisant',
-        description: `Stock disponible: ${product.quantity} ${product.unit}`,
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    const newSale: Sale = {
-      id: Date.now().toString(),
-      storeId: store?.id || 'default',
+    const saleData = {
       productId: product.id,
-      quantity,
-      totalPrice: product.price * quantity,
-      date: new Date(),
+      quantity: formData.quantity,
+      unitPrice: product.price,
+      totalPrice: product.price * formData.quantity,
+      tenantId: store.id,
     };
 
-    setSales([newSale, ...sales]);
-
-    // Update product quantity
-    updateProduct(product.id, {
-      quantity: product.quantity - quantity,
-    });
-
-    toast({
-      title: 'Vente enregistrée',
-      description: `${quantity} ${product.unit} de ${product.name} vendu(s)`,
-    });
-
+    const { error } = await api.sales.create(saleData);
+    if (error) {
+      toast({ title: 'Erreur', description: error, variant: 'destructive' });
+    } else {
+      toast({ title: 'Vente enregistrée', description: `${formData.quantity} x ${product.name}` });
+      
+      const newQuantity = product.quantity - formData.quantity;
+      await api.products.update(product.id, { quantity: newQuantity });
+      
+      loadData();
+    }
     handleCloseDialog();
   };
 
-  const getProductName = (productId: string) => {
-    return products.find(p => p.id === productId)?.name || 'Produit inconnu';
-  };
-
-  const formatDate = (date: Date) => {
-    return new Intl.DateTimeFormat('fr-FR', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(new Date(date));
-  };
-
-  // Sort sales by date (newest first)
-  const sortedSales = [...sales].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
   return (
     <div className="p-8 space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Ventes</h1>
-          <p className="text-muted-foreground">Suivez toutes vos transactions</p>
+          <p className="text-muted-foreground">Enregistrez et suivre vos ventes</p>
         </div>
         <Button onClick={handleOpenDialog}>
           <Plus className="h-4 w-4 mr-2" />
@@ -138,18 +162,7 @@ export default function SalesPage() {
         </Button>
       </div>
 
-      {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Total ventes</CardTitle>
-            <ShoppingCart className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{sales.length}</div>
-          </CardContent>
-        </Card>
-
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Ventes aujourd&apos;hui</CardTitle>
@@ -157,152 +170,149 @@ export default function SalesPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{todaySales.length}</div>
+            <p className="text-xs text-muted-foreground">transaction(s)</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Revenu total</CardTitle>
-            <DollarSign className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Revenus aujourd&apos;hui</CardTitle>
+            <DollarSign className="h-4 w-4 text-green-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              {formatCurrency(totalRevenue, store?.currency)}
-            </div>
+            <div className="text-2xl font-bold text-green-500">{formatCurrency(todayRevenue)}</div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Revenu aujourd&apos;hui</CardTitle>
-            <TrendingUp className="h-4 w-4 text-green-500" />
+            <CardTitle className="text-sm font-medium">Revenus totaux</CardTitle>
+            <TrendingUp className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-green-500">
-              {formatCurrency(todayRevenue, store?.currency)}
-            </div>
+            <div className="text-2xl font-bold">{formatCurrency(totalRevenue)}</div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Articles vendus</CardTitle>
+            <ShoppingCart className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{totalItemsSold}</div>
+            <p className="text-xs text-muted-foreground">pièce(s)</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Sales List */}
       <Card>
         <CardHeader>
           <CardTitle>Historique des ventes</CardTitle>
-          <CardDescription>Liste de toutes les transactions</CardDescription>
+          <CardDescription>
+            {sales.length} vente(s) enregistrée(s)
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          {sortedSales.length === 0 ? (
-            <Empty
-              icon={TrendingUp}
-              title="Aucune vente"
-              description="Enregistrez votre première vente pour commencer"
-            />
+          {isLoading ? (
+            <div className="text-center py-8">Chargement...</div>
+          ) : sales.length === 0 ? (
+            <div className="text-center py-8">
+              <TrendingUp className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+              <p className="text-muted-foreground">Aucune vente enregistrée</p>
+              <Button className="mt-4" onClick={handleOpenDialog}>
+                <Plus className="h-4 w-4 mr-2" />
+                Enregistrer une vente
+              </Button>
+            </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Date</TableHead>
                   <TableHead>Produit</TableHead>
-                  <TableHead className="text-center">Quantité</TableHead>
-                  <TableHead className="text-right">Montant</TableHead>
+                  <TableHead>Quantité</TableHead>
+                  <TableHead>Prix unitaire</TableHead>
+                  <TableHead>Total</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {sortedSales.map((sale) => {
-                  const product = products.find(p => p.id === sale.productId);
-                  return (
-                    <TableRow key={sale.id}>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {formatDate(sale.date)}
-                      </TableCell>
-                      <TableCell className="font-medium">
-                        {getProductName(sale.productId)}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {sale.quantity} {product?.unit}
-                      </TableCell>
-                      <TableCell className="text-right font-semibold">
-                        {formatCurrency(sale.totalPrice, store?.currency)}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
+                {sales.slice().reverse().map((sale) => (
+                  <TableRow key={sale.id}>
+                    <TableCell>
+                      {sale.createdAt ? new Date(sale.createdAt).toLocaleDateString('fr-FR') : '-'}
+                    </TableCell>
+                    <TableCell className="font-medium">{sale.productName}</TableCell>
+                    <TableCell>{sale.quantity}</TableCell>
+                    <TableCell>{formatCurrency(sale.unitPrice)}</TableCell>
+                    <TableCell className="font-medium">{formatCurrency(sale.totalPrice)}</TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           )}
         </CardContent>
       </Card>
 
-      {/* Add Sale Dialog */}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Nouvelle vente</DialogTitle>
             <DialogDescription>
-              Enregistrez une nouvelle transaction
+              Enregistrez une nouvelle vente
             </DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleSubmit}>
-            <div className="space-y-4 py-4">
-              <FieldGroup>
-                <Field>
-                  <FieldLabel>Produit *</FieldLabel>
-                  <Select
-                    value={formData.productId}
-                    onValueChange={(value) => setFormData({ ...formData, productId: value })}
-                    required
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Sélectionnez un produit" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {products
-                        .filter(p => p.quantity > 0)
-                        .map((product) => (
-                          <SelectItem key={product.id} value={product.id}>
-                            {product.name} (Stock: {product.quantity} {product.unit})
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-              </FieldGroup>
-
-              <FieldGroup>
-                <Field>
-                  <FieldLabel>Quantité *</FieldLabel>
-                  <Input
-                    type="number"
-                    min="1"
-                    value={formData.quantity}
-                    onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
-                    placeholder="Quantité vendue"
-                    required
-                  />
-                </Field>
-              </FieldGroup>
-
-              {formData.productId && formData.quantity && (
-                <div className="rounded-lg bg-muted p-4">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium">Montant total:</span>
-                    <span className="text-lg font-bold">
-                      {formatCurrency(
-                        (products.find(p => p.id === formData.productId)?.price || 0) *
-                          parseInt(formData.quantity || '0'),
-                        store?.currency
-                      )}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <FieldGroup>
+              <Field>
+                <FieldLabel>Produit *</FieldLabel>
+                <Select 
+                  value={formData.productId} 
+                  onValueChange={(value) => setFormData({ ...formData, productId: value })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Sélectionner un produit" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {products.filter(p => p.quantity > 0).map((product) => (
+                      <SelectItem key={product.id} value={product.id}>
+                        {product.name} - {formatCurrency(product.price)} ({product.quantity} en stock)
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            </FieldGroup>
+            <FieldGroup>
+              <Field>
+                <FieldLabel>Quantité *</FieldLabel>
+                <Input
+                  type="number"
+                  min="1"
+                  max={products.find(p => p.id === formData.productId)?.quantity || 1}
+                  value={formData.quantity}
+                  onChange={(e) => setFormData({ ...formData, quantity: parseInt(e.target.value) || 1 })}
+                  required
+                />
+              </Field>
+            </FieldGroup>
+            {formData.productId && (
+              <div className="p-3 bg-muted rounded-lg">
+                <p className="text-sm text-muted-foreground">Total</p>
+                <p className="text-xl font-bold">
+                  {formatCurrency(
+                    (products.find(p => p.id === formData.productId)?.price || 0) * formData.quantity
+                  )}
+                </p>
+              </div>
+            )}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={handleCloseDialog}>
                 Annuler
               </Button>
-              <Button type="submit">Enregistrer la vente</Button>
+              <Button type="submit" disabled={!formData.productId}>
+                Enregistrer
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>

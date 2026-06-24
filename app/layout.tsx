@@ -4,6 +4,7 @@ import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 import { AppProvider } from '@/lib/app-context'
 import { Toaster } from '@/components/ui/toaster'
+import { AuthCheck } from '@/components/auth-check'
 
 const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
@@ -52,6 +53,7 @@ export default function RootLayout({
       </head>
       <body className="font-sans antialiased">
         <AppProvider>
+          <AuthCheck />
           {children}
           <Toaster />
         </AppProvider>

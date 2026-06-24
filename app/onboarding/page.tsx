@@ -13,6 +13,7 @@ import { Label } from '@/components/ui/label';
 import { Package, Store, Settings, CheckCircle2, ArrowRight, ArrowLeft } from 'lucide-react';
 import { useApp } from '@/lib/app-context';
 import { useToast } from '@/hooks/use-toast';
+import { api } from '@/lib/api';
 import type { Store as StoreType, Category, Product, Location } from '@/lib/mock-data';
 import { Progress } from '@/components/ui/progress';
 import { MapPin, Plus, Trash2 } from 'lucide-react';
@@ -22,6 +23,7 @@ export default function OnboardingPage() {
   const { setStore, setCategories, setProducts, setIsOnboarded, setLocations, setCurrentLocation } = useApp();
   const { toast } = useToast();
   const [step, setStep] = useState(1);
+  const [isLoading, setIsLoading] = useState(false);
 
   // Step 1: Store Information
   const [storeName, setStoreName] = useState('');
@@ -103,10 +105,19 @@ export default function OnboardingPage() {
     setCustomCategories(customCategories.filter(c => c !== category));
   };
 
-  const handleComplete = () => {
-    // Create store
-    const newStore: StoreType = {
-      id: Date.now().toString(),
+  const handleComplete = async () => {
+    if (!storeName || !ownerName || !phone || !country || !city) {
+      toast({
+        title: 'Erreur',
+        description: 'Veuillez remplir tous les champs obligatoires',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsLoading(true);
+
+    const tenantData = {
       name: storeName,
       owner: ownerName,
       phone,
@@ -115,42 +126,101 @@ export default function OnboardingPage() {
       currency,
       lowStockThreshold,
       notificationsEnabled,
-      createdAt: new Date(),
     };
 
-    // Create locations
-    const newLocations: Location[] = locations
-      .filter(loc => loc.name && loc.city)
-      .map((loc, index) => ({
+    try {
+      const { data: tenant, error } = await api.tenants.create(tenantData);
+
+      if (error) {
+        toast({
+          title: 'Erreur',
+          description: error,
+          variant: 'destructive',
+        });
+        setIsLoading(false);
+        return;
+      }
+
+      if (!tenant?.id) {
+        toast({
+          title: 'Erreur',
+          description: 'Impossible de créer le tenant',
+          variant: 'destructive',
+        });
+        setIsLoading(false);
+        return;
+      }
+
+      localStorage.setItem('tenantId', tenant.id);
+
+      const userId = localStorage.getItem('userId');
+      if (userId) {
+        await api.auth.setUserTenant(userId, tenant.id);
+      }
+
+      for (const catName of customCategories) {
+        const { error: catError } = await api.categories.create({
+          name: catName,
+          tenantId: tenant.id,
+        });
+        if (catError) {
+          console.error('Failed to create category:', catError);
+        }
+      }
+
+      const newStore: StoreType = {
+        id: tenant.id,
+        name: storeName,
+        owner: ownerName,
+        phone,
+        country,
+        city,
+        currency,
+        lowStockThreshold,
+        notificationsEnabled,
+        createdAt: new Date(),
+      };
+
+      const newLocations: Location[] = locations
+        .filter(loc => loc.name && loc.city)
+        .map((loc, index) => ({
+          id: (index + 1).toString(),
+          storeId: newStore.id,
+          name: loc.name,
+          address: loc.address,
+          city: loc.city,
+          phone: loc.phone,
+          isMain: index === 0,
+          createdAt: new Date(),
+        }));
+
+      const newCategories: Category[] = customCategories.map((name, index) => ({
         id: (index + 1).toString(),
         storeId: newStore.id,
-        name: loc.name,
-        address: loc.address,
-        city: loc.city,
-        phone: loc.phone,
-        isMain: index === 0,
-        createdAt: new Date(),
+        name,
       }));
 
-    // Create categories
-    const newCategories: Category[] = customCategories.map((name, index) => ({
-      id: (index + 1).toString(),
-      storeId: newStore.id,
-      name,
-    }));
+      setStore(newStore);
+      setLocations(newLocations);
+      setCurrentLocation(newLocations[0] || null);
+      setCategories(newCategories);
+      setIsOnboarded(true);
 
-    setStore(newStore);
-    setLocations(newLocations);
-    setCurrentLocation(newLocations[0] || null);
-    setCategories(newCategories);
-    setIsOnboarded(true);
+      toast({
+        title: 'Configuration terminée !',
+        description: 'Bienvenue dans votre tableau de bord',
+      });
 
-    toast({
-      title: 'Configuration terminée !',
-      description: 'Bienvenue dans votre tableau de bord',
-    });
-
-    router.push('/dashboard');
+      router.push('/dashboard');
+    } catch (err) {
+      toast({
+        title: 'Erreur',
+        description: err instanceof Error ? err.message : 'Une erreur est survenue',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -485,9 +555,9 @@ export default function OnboardingPage() {
                   <ArrowRight className="h-4 w-4 ml-2" />
                 </Button>
               ) : (
-                <Button onClick={handleComplete}>
-                  Accéder à mon dashboard
-                  <CheckCircle2 className="h-4 w-4 ml-2" />
+                <Button onClick={handleComplete} disabled={isLoading}>
+                  {isLoading ? 'Configuration...' : 'Accéder à mon dashboard'}
+                  {!isLoading && <CheckCircle2 className="h-4 w-4 ml-2" />}
                 </Button>
               )}
             </div>
