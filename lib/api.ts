@@ -36,15 +36,21 @@ async function fetchApi<T>(
 export const api = {
   auth: {
     register: (email: string, password: string, name: string) =>
-      fetchApi<{ token: string }>('/auth/register', {
+      fetchApi<{ token: string; userId: string; tenantId: string | null; role: string }>('/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ email, password, name }),
+        body: JSON.stringify({ email, password }),
       }),
     
     login: (email: string, password: string) =>
-      fetchApi<{ token: string; userId: string; tenantId: string; role: string }>('/auth/login', {
+      fetchApi<{ token: string; userId: string; tenantId: string | null; role: string }>('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email, password }),
+      }),
+
+    setUserTenant: (userId: string, tenantId: string) =>
+      fetchApi<void>('/auth/user/tenant', {
+        method: 'PUT',
+        body: JSON.stringify({ userId, tenantId }),
       }),
   },
 
@@ -66,13 +72,53 @@ export const api = {
     
     get: (id: string) =>
       fetchApi<any>(`/tenants/${id}`),
+
+    update: (id: string, data: {
+      name: string;
+      owner: string;
+      phone: string;
+      country: string;
+      city: string;
+      currency: string;
+      lowStockThreshold?: number;
+      notificationsEnabled?: boolean;
+    }) =>
+      fetchApi<any>(`/tenants/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+  },
+
+  locations: {
+    create: (data: {
+      name: string;
+      address?: string;
+      city: string;
+      phone?: string;
+      tenantId: string;
+      isMain?: boolean;
+    }) =>
+      fetchApi<any>('/locations', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
   },
 
   products: {
     list: (tenantId: string) =>
       fetchApi<any[]>(`/inventory/products?tenantId=${tenantId}`),
     
-    create: (data: any) =>
+    create: (data: {
+      name: string;
+      sku?: string;
+      price: number;
+      quantity: number;
+      unit?: string;
+      categoryId?: string;
+      tenantId: string;
+      lowStockThreshold?: number;
+      description?: string;
+    }) =>
       fetchApi<any>('/inventory/products', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -94,9 +140,22 @@ export const api = {
     list: (tenantId: string) =>
       fetchApi<any[]>(`/inventory/categories?tenantId=${tenantId}`),
     
-    create: (data: any) =>
+    create: (data: {
+      name: string;
+      description?: string;
+      tenantId: string;
+    }) =>
       fetchApi<any>('/inventory/categories', {
         method: 'POST',
+        body: JSON.stringify(data),
+      }),
+
+    update: (id: string, data: {
+      name: string;
+      description?: string;
+    }) =>
+      fetchApi<any>(`/inventory/categories/${id}`, {
+        method: 'PUT',
         body: JSON.stringify(data),
       }),
     
@@ -110,7 +169,13 @@ export const api = {
     list: (tenantId: string) =>
       fetchApi<any[]>(`/inventory/sales?tenantId=${tenantId}`),
     
-    create: (data: any) =>
+    create: (data: {
+      productId: string;
+      quantity: number;
+      unitPrice: number;
+      totalPrice: number;
+      tenantId: string;
+    }) =>
       fetchApi<any>('/inventory/sales', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -121,9 +186,22 @@ export const api = {
     list: (tenantId: string) =>
       fetchApi<any[]>(`/inventory/suppliers?tenantId=${tenantId}`),
     
-    create: (data: any) =>
+    create: (data: {
+      name: string;
+      contact?: string;
+      phone?: string;
+      email?: string;
+      address?: string;
+      tenantId: string;
+    }) =>
       fetchApi<any>('/inventory/suppliers', {
         method: 'POST',
+        body: JSON.stringify(data),
+      }),
+
+    update: (id: string, data: any) =>
+      fetchApi<any>(`/inventory/suppliers/${id}`, {
+        method: 'PUT',
         body: JSON.stringify(data),
       }),
     

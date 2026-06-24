@@ -45,6 +45,12 @@ public class AuthService {
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) throw new RuntimeException("Invalid credentials");
         return new AuthResponse(generateToken(user.getId(), user.getTenantId(), user.getRole()), "Bearer", user.getId(), user.getTenantId(), user.getRole());
     }
+
+    public void setUserTenant(UUID userId, UUID tenantId) {
+        User user = userRepository.findById(userId).orElseThrow(() -> new RuntimeException("User not found"));
+        user.setTenantId(tenantId);
+        userRepository.save(user);
+    }
     
     private String generateToken(UUID userId, UUID tenantId, String role) {
         return Jwts.builder().subject(userId.toString())

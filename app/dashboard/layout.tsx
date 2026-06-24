@@ -53,6 +53,11 @@ export default function DashboardLayout({
   const { toast } = useToast();
 
   const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('userId');
+    localStorage.removeItem('tenantId');
+    localStorage.removeItem('role');
+    
     setUser(null);
     setStore(null);
     setIsOnboarded(false);

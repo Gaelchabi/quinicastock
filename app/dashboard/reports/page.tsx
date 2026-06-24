@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
@@ -11,291 +11,295 @@ import {
   DollarSign, 
   ShoppingCart,
   AlertTriangle,
-  Award
+  Award,
+  Calendar
 } from 'lucide-react';
 import { useApp } from '@/lib/app-context';
-import { formatCurrency, getProductStatus } from '@/lib/mock-data';
-import { Empty } from '@/components/ui/empty';
+import { api } from '@/lib/api';
+import { useToast } from '@/hooks/use-toast';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 export default function ReportsPage() {
-  const { sales, products, categories, store } = useApp();
+  const { store, categories } = useApp();
+  const { toast } = useToast();
+  const [products, setProducts] = useState<any[]>([]);
+  const [sales, setSales] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [period, setPeriod] = useState('all');
 
-  // Calculate various metrics
+  useEffect(() => {
+    if (store?.id) {
+      loadData();
+    }
+  }, [store?.id]);
+
+  const loadData = async () => {
+    if (!store?.id) return;
+    setIsLoading(true);
+    
+    const [productsRes, salesRes] = await Promise.all([
+      api.products.list(store.id),
+      api.sales.list(store.id)
+    ]);
+
+    if (productsRes.error) {
+      toast({ title: 'Erreur', description: productsRes.error, variant: 'destructive' });
+    } else {
+      setProducts(productsRes.data || []);
+    }
+
+    if (salesRes.error) {
+      toast({ title: 'Erreur', description: salesRes.error, variant: 'destructive' });
+    } else {
+      setSales(salesRes.data || []);
+    }
+
+    setIsLoading(false);
+  };
+
+  const formatCurrency = (value: number) => {
+    return new Intl.NumberFormat('fr-FR', { style: 'currency', currency: store?.currency || 'XOF' }).format(value);
+  };
+
+  const getProductStatus = (product: any) => {
+    const threshold = product.lowStockThreshold || 10;
+    if (product.quantity === 0) return 'out-of-stock';
+    if (product.quantity <= threshold) return 'low-stock';
+    return 'in-stock';
+  };
+
+  const filteredSales = useMemo(() => {
+    if (period === 'all') return sales;
+    
+    const now = new Date();
+    let startDate: Date;
+    
+    switch (period) {
+      case 'today':
+        startDate = new Date(now.setHours(0, 0, 0, 0));
+        break;
+      case 'week':
+        startDate = new Date(now.setDate(now.getDate() - 7));
+        break;
+      case 'month':
+        startDate = new Date(now.setMonth(now.getMonth() - 1));
+        break;
+      default:
+        return sales;
+    }
+    
+    return sales.filter(s => new Date(s.createdAt) >= startDate);
+  }, [sales, period]);
+
   const metrics = useMemo(() => {
-    const totalRevenue = sales.reduce((sum, sale) => sum + sale.totalPrice, 0);
-    const totalSales = sales.length;
-    const totalProducts = products.length;
-    const totalItemsSold = sales.reduce((sum, sale) => sum + sale.quantity, 0);
+    const totalRevenue = filteredSales.reduce((sum, s) => sum + (s.totalPrice || 0), 0);
+    const totalSales = filteredSales.length;
+    const totalItemsSold = filteredSales.reduce((sum, s) => sum + (s.quantity || 0), 0);
+    const avgSaleValue = totalSales > 0 ? totalRevenue / totalSales : 0;
+    
+    const outOfStock = products.filter(p => p.quantity === 0).length;
+    const lowStock = products.filter(p => p.quantity > 0 && p.quantity <= (p.lowStockThreshold || 10)).length;
+    
+    const topProducts = [...filteredSales]
+      .sort((a, b) => (b.quantity || 0) - (a.quantity || 0))
+      .slice(0, 5)
+      .map(s => ({
+        name: s.productName || 'Inconnu',
+        quantity: s.quantity || 0,
+        revenue: s.totalPrice || 0
+      }));
 
-    // Today's metrics
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todaySales = sales.filter(sale => {
-      const saleDate = new Date(sale.date);
-      saleDate.setHours(0, 0, 0, 0);
-      return saleDate.getTime() === today.getTime();
-    });
-    const todayRevenue = todaySales.reduce((sum, sale) => sum + sale.totalPrice, 0);
+    return { totalRevenue, totalSales, totalItemsSold, avgSaleValue, outOfStock, lowStock, topProducts };
+  }, [filteredSales, products]);
 
-    // This week's metrics
-    const weekAgo = new Date();
-    weekAgo.setDate(weekAgo.getDate() - 7);
-    const weekSales = sales.filter(sale => new Date(sale.date) >= weekAgo);
-    const weekRevenue = weekSales.reduce((sum, sale) => sum + sale.totalPrice, 0);
-
-    // Stock alerts
-    const outOfStock = products.filter(p => getProductStatus(p) === 'out-of-stock').length;
-    const lowStock = products.filter(p => getProductStatus(p) === 'low-stock').length;
-
-    // Product sales ranking
-    const productSalesMap = new Map<string, { quantity: number; revenue: number }>();
-    sales.forEach(sale => {
-      const current = productSalesMap.get(sale.productId) || { quantity: 0, revenue: 0 };
-      productSalesMap.set(sale.productId, {
-        quantity: current.quantity + sale.quantity,
-        revenue: current.revenue + sale.totalPrice,
-      });
-    });
-
-    const topProducts = Array.from(productSalesMap.entries())
-      .map(([productId, stats]) => ({
-        product: products.find(p => p.id === productId),
-        ...stats,
-      }))
-      .filter(item => item.product)
-      .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 10);
-
-    // Category sales
-    const categorySalesMap = new Map<string, { quantity: number; revenue: number }>();
-    sales.forEach(sale => {
+  const topCategories = useMemo(() => {
+    const categoryMap = new Map();
+    
+    filteredSales.forEach(sale => {
       const product = products.find(p => p.id === sale.productId);
-      if (product) {
-        const current = categorySalesMap.get(product.categoryId) || { quantity: 0, revenue: 0 };
-        categorySalesMap.set(product.categoryId, {
-          quantity: current.quantity + sale.quantity,
-          revenue: current.revenue + sale.totalPrice,
-        });
+      if (product?.categoryId) {
+        const current = categoryMap.get(product.categoryId) || { name: product.categoryName || 'Inconnu', revenue: 0, count: 0 };
+        current.revenue += sale.totalPrice || 0;
+        current.count += sale.quantity || 0;
+        categoryMap.set(product.categoryId, current);
       }
     });
 
-    const topCategories = Array.from(categorySalesMap.entries())
-      .map(([categoryId, stats]) => ({
-        category: categories.find(c => c.id === categoryId),
-        ...stats,
-      }))
-      .filter(item => item.category)
-      .sort((a, b) => b.revenue - a.revenue);
-
-    // Stock value
-    const totalStockValue = products.reduce((sum, p) => sum + (p.quantity * p.price), 0);
-
-    return {
-      totalRevenue,
-      totalSales,
-      totalProducts,
-      totalItemsSold,
-      todayRevenue,
-      weekRevenue,
-      outOfStock,
-      lowStock,
-      topProducts,
-      topCategories,
-      totalStockValue,
-    };
-  }, [sales, products, categories]);
+    return Array.from(categoryMap.entries())
+      .map(([id, data]: [any, any]) => ({ id, ...data }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 5);
+  }, [filteredSales, products]);
 
   return (
     <div className="p-8 space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold">Rapports et analyses</h1>
-        <p className="text-muted-foreground">Vue d&apos;ensemble de votre activité</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Rapports</h1>
+          <p className="text-muted-foreground">Analysez vos performances</p>
+        </div>
+        <Select value={period} onValueChange={setPeriod}>
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="Période" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="today">Aujourd&apos;hui</SelectItem>
+            <SelectItem value="week">Cette semaine</SelectItem>
+            <SelectItem value="month">Ce mois</SelectItem>
+            <SelectItem value="all">Tout</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
-      {/* Overview Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Revenu total</CardTitle>
-            <DollarSign className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {formatCurrency(metrics.totalRevenue, store?.currency)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Cette semaine: {formatCurrency(metrics.weekRevenue, store?.currency)}
-            </p>
-          </CardContent>
-        </Card>
+      {isLoading ? (
+        <div className="text-center py-12">Chargement...</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-sm font-medium">Revenus</CardTitle>
+                <DollarSign className="h-4 w-4 text-green-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-green-500">{formatCurrency(metrics.totalRevenue)}</div>
+                <p className="text-xs text-muted-foreground">{filteredSales.length} vente(s)</p>
+              </CardContent>
+            </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Total ventes</CardTitle>
-            <ShoppingCart className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{metrics.totalSales}</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {metrics.totalItemsSold} articles vendus
-            </p>
-          </CardContent>
-        </Card>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-sm font-medium">Articles vendus</CardTitle>
+                <ShoppingCart className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{metrics.totalItemsSold}</div>
+                <p className="text-xs text-muted-foreground">pièce(s)</p>
+              </CardContent>
+            </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Valeur du stock</CardTitle>
-            <Package className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {formatCurrency(metrics.totalStockValue, store?.currency)}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {metrics.totalProducts} produits
-            </p>
-          </CardContent>
-        </Card>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-sm font-medium">Panier moyen</CardTitle>
+                <TrendingUp className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{formatCurrency(metrics.avgSaleValue)}</div>
+              </CardContent>
+            </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Alertes stock</CardTitle>
-            <AlertTriangle className="h-4 w-4 text-orange-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-orange-500">
-              {metrics.outOfStock + metrics.lowStock}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {metrics.outOfStock} ruptures, {metrics.lowStock} faibles
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
+                <CardTitle className="text-sm font-medium">Stock</CardTitle>
+                <AlertTriangle className="h-4 w-4 text-orange-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-orange-500">
+                  {metrics.outOfStock + metrics.lowStock}
+                </div>
+                <p className="text-xs text-muted-foreground">produit(s) à surveiller</p>
+              </CardContent>
+            </Card>
+          </div>
 
-      {/* Top Products */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Award className="h-5 w-5 text-primary" />
-            Top 10 des produits les plus vendus
-          </CardTitle>
-          <CardDescription>Classement par chiffre d&apos;affaires généré</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {metrics.topProducts.length === 0 ? (
-            <Empty
-              icon={TrendingUp}
-              title="Aucune vente"
-              description="Les statistiques apparaîtront après vos premières ventes"
-            />
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-12">#</TableHead>
-                  <TableHead>Produit</TableHead>
-                  <TableHead className="text-center">Quantité vendue</TableHead>
-                  <TableHead className="text-right">Revenu généré</TableHead>
-                  <TableHead className="text-right">Stock actuel</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {metrics.topProducts.map((item, index) => (
-                  <TableRow key={item.product?.id}>
-                    <TableCell>
-                      <Badge 
-                        variant={index < 3 ? 'default' : 'secondary'}
-                        className={index === 0 ? 'bg-yellow-500 hover:bg-yellow-600' : ''}
-                      >
-                        {index + 1}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="font-medium">
-                      {item.product?.name}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {item.quantity} {item.product?.unit}
-                    </TableCell>
-                    <TableCell className="text-right font-semibold">
-                      {formatCurrency(item.revenue, store?.currency)}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Badge
-                        variant={
-                          getProductStatus(item.product!) === 'out-of-stock'
-                            ? 'destructive'
-                            : getProductStatus(item.product!) === 'low-stock'
-                            ? 'outline'
-                            : 'secondary'
-                        }
-                      >
-                        {item.product?.quantity} {item.product?.unit}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Top Categories */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <BarChart3 className="h-5 w-5 text-primary" />
-            Performance par catégorie
-          </CardTitle>
-          <CardDescription>Analyse des ventes par catégorie de produits</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {metrics.topCategories.length === 0 ? (
-            <Empty
-              icon={BarChart3}
-              title="Aucune donnée"
-              description="Les statistiques par catégorie apparaîtront après vos ventes"
-            />
-          ) : (
-            <div className="space-y-4">
-              {metrics.topCategories.map((item, index) => {
-                const percentage = (item.revenue / metrics.totalRevenue) * 100;
-                return (
-                  <div key={item.category?.id} className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <Badge variant="secondary">{index + 1}</Badge>
-                        <div>
-                          <p className="font-medium">{item.category?.name}</p>
-                          <p className="text-sm text-muted-foreground">
-                            {item.quantity} articles vendus
-                          </p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-semibold">
-                          {formatCurrency(item.revenue, store?.currency)}
-                        </p>
-                        <p className="text-sm text-muted-foreground">
-                          {percentage.toFixed(1)}% du total
-                        </p>
-                      </div>
-                    </div>
-                    <div className="w-full bg-secondary h-2 rounded-full overflow-hidden">
-                      <div
-                        className="bg-primary h-full transition-all"
-                        style={{ width: `${percentage}%` }}
-                      />
-                    </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Produits les plus vendus</CardTitle>
+                <CardDescription>Top 5 des produits</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {metrics.topProducts.length > 0 ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Produit</TableHead>
+                        <TableHead>Quantité</TableHead>
+                        <TableHead>Revenus</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {metrics.topProducts.map((product, i) => (
+                        <TableRow key={i}>
+                          <TableCell className="font-medium">{product.name}</TableCell>
+                          <TableCell>{product.quantity}</TableCell>
+                          <TableCell>{formatCurrency(product.revenue)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <div className="text-center py-8 text-muted-foreground">
+                    Aucune donnée disponible
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Categories performantes</CardTitle>
+                <CardDescription>Top 5 des catégories</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {topCategories.length > 0 ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Catégorie</TableHead>
+                        <TableHead>Ventes</TableHead>
+                        <TableHead>Revenus</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {topCategories.map((cat, i) => (
+                        <TableRow key={i}>
+                          <TableCell className="font-medium">{cat.name}</TableCell>
+                          <TableCell>{cat.count}</TableCell>
+                          <TableCell>{formatCurrency(cat.revenue)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <div className="text-center py-8 text-muted-foreground">
+                    Aucune donnée disponible
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>État du stock</CardTitle>
+              <CardDescription>Répartition des produits</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-3 gap-4 text-center">
+                <div className="p-4 bg-green-50 rounded-lg">
+                  <div className="text-2xl font-bold text-green-600">
+                    {products.filter(p => getProductStatus(p) === 'in-stock').length}
+                  </div>
+                  <div className="text-sm text-green-700">En stock</div>
+                </div>
+                <div className="p-4 bg-orange-50 rounded-lg">
+                  <div className="text-2xl font-bold text-orange-600">
+                    {metrics.lowStock}
+                  </div>
+                  <div className="text-sm text-orange-700">Stock faible</div>
+                </div>
+                <div className="p-4 bg-red-50 rounded-lg">
+                  <div className="text-2xl font-bold text-red-600">
+                    {metrics.outOfStock}
+                  </div>
+                  <div className="text-sm text-red-700">Rupture</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
     </div>
   );
 }
